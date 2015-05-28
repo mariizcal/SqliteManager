@@ -1,14 +1,16 @@
 package com.mariizcal.sqltestmanager.database;
 
 import android.content.ContentValues;
+import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteException;
+import android.util.Log;
 
-import java.io.InvalidClassException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.lang.reflect.Type;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
@@ -21,6 +23,10 @@ public abstract class DAO implements IDBAccess<Object> {
 
     private Class clazz;
     private SQLiteDatabase mDb;
+    private String query;
+
+    private boolean isQueryInitialized = false;
+    private boolean isNestedWhereClause = false;
 
     protected DAO(Class clazz) {
         this.clazz = clazz;
@@ -38,29 +44,61 @@ public abstract class DAO implements IDBAccess<Object> {
     @Override
     public long insert(Object object) {
         long result = -1;
-        open();
-        result = mDb.insert(clazz.getSimpleName(), null, toContentValues(object, true));
-        close();
+        try {
+            open();
+            mDb.beginTransaction();
+            result = mDb.insert(clazz.getSimpleName(), null, toContentValues(object, true));
+            mDb.setTransactionSuccessful();
+        } catch (SQLiteException e) {
+            Log.e("SQLiteException", e.getLocalizedMessage());
+            e.printStackTrace();
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            mDb.endTransaction();
+            close();
+        }
         return result;
     }
 
     @Override
     public long update(Object object, int id) {
         long result = -1;
-        open();
-        result = mDb.update(clazz.getSimpleName(),toContentValues(object, false), "_id = " + id, null);
-        close();
+        try {
+            open();
+            mDb.beginTransaction();
+            result = mDb.update(clazz.getSimpleName(), toContentValues(object, false), "_id = " + id, null);
+            mDb.setTransactionSuccessful();
+        } catch (SQLiteException e) {
+            Log.e("SQLiteException", e.getLocalizedMessage());
+            e.printStackTrace();
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            mDb.endTransaction();
+            close();
+        }
         return result;
     }
 
     @Override
     public long delete(Object object, int id) {
-        return 0;
-    }
-
-    @Override
-    public List<Object> read() {
-        return null;
+        long result = -1;
+        try {
+            open();
+            mDb.beginTransaction();
+            result = mDb.delete(clazz.getSimpleName(), "_id = " + id, null);
+            mDb.setTransactionSuccessful();
+        } catch (SQLiteException e) {
+            Log.e("SQLiteException", e.getLocalizedMessage());
+            e.printStackTrace();
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            mDb.endTransaction();
+            close();
+        }
+        return result;
     }
 
     @Override
@@ -75,12 +113,12 @@ public abstract class DAO implements IDBAccess<Object> {
             try {
                 cv = new ContentValues();
                 Field[] fields = clazz.getDeclaredFields();
-                for (Field field :fields) {
-                    String methodType = field.getType().toString().equals("boolean") ? "is" : "get";
-                    String getMethod = methodType + field.getName().substring(0, 1).toUpperCase()
-                            + field.getName().substring(1);
-                    Method method = clazz.getMethod(getMethod);
-                    cv.put(field.getName(), String.valueOf(method.invoke(object)));
+                for (Field field : fields) {
+                    String getMethod = getters(field);
+                    if (!getMethod.equals("none")) {
+                        Method method = clazz.getMethod(getMethod);
+                        cv.put(field.getName(), String.valueOf(method.invoke(object)));
+                    }
                 }
             } catch (Exception e) {
                 e.printStackTrace();
@@ -94,6 +132,155 @@ public abstract class DAO implements IDBAccess<Object> {
         } else
             throw new IllegalStateException("Checks that have defined the class of the corresponding" +
                     " model in the constructor");
+    }
+
+    public DAO getAll() {
+        query = "SELECT * FROM " + clazz.getSimpleName() + " ";
+        isQueryInitialized = true;
+        return this;
+    }
+
+    public DAO where(String column, String condition) {
+        if (isQueryInitialized) {
+
+            if (isNestedWhereClause)
+                query += " AND ";
+            else
+                query += " WHERE ";
+
+            query += column + " = " + "'" + condition + "'";
+            isNestedWhereClause = true;
+            return this;
+        } else
+            throw new IllegalStateException("You have to initialize the query calling the getAll() method!," +
+                    " you can't call where method without initialized the query ");
+    }
+
+    public List<Object> find() {
+        if (isQueryInitialized) {
+            ArrayList<Object> items = null;
+            query += " ;";
+            open();
+            mDb.beginTransaction();
+            try {
+                Cursor cursor = mDb.rawQuery(query, null);
+                if (cursor != null) {
+                    items = new ArrayList<>();
+                    while (cursor.moveToNext()) {
+                        Object item = clazz.newInstance();
+
+                        Field [] superFields = clazz.getSuperclass().getDeclaredFields();
+                        for (Field field : superFields) {
+                            Method method = superSetters(field);
+                            if(method != null){
+                                method.invoke(item, getObject(field, cursor));
+                            }
+                        }
+
+                        Field[] fields = clazz.getDeclaredFields();
+                        for (Field field : fields) {
+                            Method method = setters(field);
+                            if(method != null){
+                                method.invoke(item, getObject(field, cursor));
+                            }
+                        }
+                        items.add(item);
+                    }
+                }
+                mDb.setTransactionSuccessful();
+                restartQuery();
+            } catch (SQLiteException e) {
+                Log.e("SQLiteException", e.getLocalizedMessage());
+                e.printStackTrace();
+            } catch (Exception e) {
+                e.printStackTrace();
+            } finally {
+                mDb.endTransaction();
+                close();
+            }
+            return items;
+        } else
+            throw new IllegalStateException("You have to initialize the query calling the getAll() method!," +
+                    " you can't call where method without initialized the query ");
+    }
+
+    private void restartQuery() {
+        query = null;
+        isQueryInitialized = false;
+        isNestedWhereClause = false;
+    }
+
+    private String getters(Field field) {
+        if (isValidSQLiteType(field.getType().getSimpleName())) {
+            String methodType = field.getType().getSimpleName().equals("boolean") ? "is" : "get";
+            return methodType + field.getName().substring(0, 1).toUpperCase()
+                    + field.getName().substring(1);
+        } else
+            return "none";
+    }
+
+    private Method setters(Field field) throws NoSuchMethodException {
+        if (isValidSQLiteType(field.getType().getSimpleName())) {
+            String methodName = "set" + field.getName().substring(0, 1).toUpperCase()
+                    + field.getName().substring(1);
+            return clazz.getMethod(methodName, field.getType());
+        } else
+            return null;
+    }
+
+    private Method superSetters(Field field) throws  NoSuchMethodException {
+        if (isValidSQLiteType(field.getType().getSimpleName())) {
+            String methodName = "set" + field.getName().substring(0, 1).toUpperCase()
+                    + field.getName().substring(1);
+            return clazz.getSuperclass().getMethod(methodName, field.getType());
+        } else
+            return null;
+    }
+
+    private Object getObject(Field field, Cursor cursor){
+        switch (field.getType().getSimpleName()){
+            case "int":
+                return cursor.getInt(cursor.getColumnIndex(field.getName()));
+            case "double":
+                return cursor.getDouble(cursor.getColumnIndex(field.getName()));
+            case "long":
+                return cursor.getLong(cursor.getColumnIndex(field.getName()));
+            case "boolean":
+                return cursor.getInt(cursor.getColumnIndex(field.getName())) == 1 ? true : false;
+            case "String":
+                return cursor.getString(cursor.getColumnIndex(field.getName()));
+            case "short":
+                return cursor.getShort(cursor.getColumnIndex(field.getName()));
+            case "float":
+                return cursor.getFloat(cursor.getColumnIndex(field.getName()));
+            case "char":
+                return cursor.getString(cursor.getColumnIndex(field.getName()));
+            default:
+                return null;
+        }
+    }
+
+    private boolean isValidSQLiteType(String type) {
+        switch (type) {
+            case "int":
+                return true;
+            case "double":
+                return true;
+            case "long":
+                return true;
+            case "boolean":
+                return true;
+            case "String":
+                return true;
+            case "short":
+                return true;
+            case "float":
+                return true;
+            case "char":
+                return true;
+            default:
+                return false;
+        }
     }
 
     private String getCurrentDateWithTime() {

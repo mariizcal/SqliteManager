@@ -77,13 +77,21 @@ public class DBConfiguration extends SQLiteOpenHelper implements BaseColumns {
             if (DBModel.class.isAssignableFrom(clazz)) {
                 String query = "CREATE TABLE " + clazz.getSimpleName() + " ( " + _ID + " INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL";
                 Field[] fields = clazz.getDeclaredFields();
-                for (int j = 0; j < fields.length; j++) {
-                    Field field = fields[j];
+                for (Field field : fields) {
                     String type = getSQLiteType(field.getType().getSimpleName());
                     if (!type.equals("none"))
                         query += " , " + field.getName() + " " + type;
                 }
-                query += ", createdAt TEXT, updatedAt TEXT );";
+
+                Field[] superFields = clazz.getSuperclass().getDeclaredFields();
+                for (Field field : superFields) {
+                    String type = getSQLiteType(field.getType().getSimpleName());
+                    if (!type.equals("none"))
+                        if(!field.getName().equals("_id"))
+                        query += " , " + field.getName() + " " + type;
+                }
+
+                query += " );";
                 queriesTables[i] = query;
             } else
                 throw new IllegalStateException(clazz.getName() + " is not extending from DBModel class." +
